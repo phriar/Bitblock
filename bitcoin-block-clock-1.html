@@ -64,11 +64,22 @@
   /* RIGHT */
   .right{grid-row:2;display:flex;flex-direction:column;justify-content:center;padding:16px 28px 16px 40px;gap:14px;}
   .price-row{padding-bottom:12px;border-bottom:1px solid var(--divider);}
-  .price-label{font-size:9px;letter-spacing:4px;color:var(--muted);margin-bottom:2px;}
-  .price-val{font-family:'Teko',sans-serif;font-size:clamp(38px,6vw,62px);font-weight:600;line-height:1;color:var(--amber);text-shadow:0 0 24px rgba(247,147,26,.4);transition:all .4s;}
-  .price-change{font-size:13px;letter-spacing:1px;margin-top:2px;}
+  .price-label{font-size:9px;letter-spacing:4px;color:var(--muted);margin-bottom:2px;display:flex;justify-content:space-between;align-items:center;}
+  .price-label .price-updated{font-size:8px;letter-spacing:1px;opacity:.5;}
+  .price-val{font-family:'Teko',sans-serif;font-size:clamp(38px,6vw,62px);font-weight:600;line-height:1;color:var(--amber);text-shadow:0 0 24px rgba(247,147,26,.4);transition:all .3s;}
+  .price-val.flash-up{animation:priceUp .6s ease forwards;}
+  .price-val.flash-down{animation:priceDown .6s ease forwards;}
+  @keyframes priceUp{0%{color:#fff;text-shadow:0 0 30px var(--green)}100%{color:var(--amber);text-shadow:0 0 24px rgba(247,147,26,.4)}}
+  @keyframes priceDown{0%{color:var(--red);text-shadow:0 0 30px var(--red)}100%{color:var(--amber);text-shadow:0 0 24px rgba(247,147,26,.4)}}
+
+  .price-change-row{display:flex;gap:12px;margin-top:3px;align-items:center;}
+  .price-change{font-size:13px;letter-spacing:1px;}
   .price-change.up{color:var(--green);}
   .price-change.down{color:var(--red);}
+  .price-change-24h{font-size:10px;letter-spacing:1px;color:var(--muted);}
+  .price-change-24h .val{font-size:11px;}
+  .price-change-24h .val.up{color:var(--green);}
+  .price-change-24h .val.down{color:var(--red);}
 
   .fees-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
   .fee-cell{background:var(--panel);border:1px solid rgba(247,147,26,.08);padding:10px 8px;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative;}
@@ -151,9 +162,15 @@
 
   <div class="right">
     <div class="price-row">
-      <div class="price-label">BTC / USD</div>
+      <div class="price-label">
+        <span>BTC / USD</span>
+        <span class="price-updated" id="priceUpdated">—</span>
+      </div>
       <div class="price-val" id="btcPrice">—</div>
-      <div class="price-change" id="priceChange"></div>
+      <div class="price-change-row">
+        <div class="price-change" id="priceChange"></div>
+        <div class="price-change-24h">24H <span class="val" id="priceChange24h">—</span></div>
+      </div>
     </div>
     <div class="fees-grid">
       <div class="fee-cell">
@@ -190,100 +207,171 @@
   </div>
 
   <div class="bottom-bar">
-    UPDATED <span id="lastUpdate" style="margin:0 6px">—</span> · AUTO-REFRESH 30s · mempool.space
+    PRICE <span id="lastPriceUpdate" style="margin:0 6px">—</span> · CHAIN <span id="lastUpdate" style="margin:0 6px">—</span> · mempool.space + coingecko
   </div>
 </div>
 
 <script>
-  const HALVING=210000;
-  let lastBlockHeight=null,lastBlockTime=null,tickInterval=null,priceCache=null;
-  function fmt(n){return n.toLocaleString('en-US');}
-  function updateClock(){
-    const now=new Date();
-    document.getElementById('dateTime').textContent=
-      now.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}).toUpperCase()+
-      '  '+now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const HALVING = 210000;
+  let lastBlockHeight = null, lastBlockTime = null, tickInterval = null;
+  let lastPrice = null, change24h = null;
+
+  function fmt(n) { return n.toLocaleString('en-US'); }
+
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('dateTime').textContent =
+      now.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'}).toUpperCase() +
+      '  ' + now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
   }
-  function startTick(){
-    if(tickInterval)clearInterval(tickInterval);
-    tickInterval=setInterval(()=>{updateElapsed();updateClock();},1000);
+
+  function startTick() {
+    if (tickInterval) clearInterval(tickInterval);
+    tickInterval = setInterval(() => { updateElapsed(); updateClock(); }, 1000);
   }
-  function updateElapsed(){
-    if(!lastBlockTime)return;
-    const elapsed=Math.floor(Date.now()/1000)-lastBlockTime;
-    const m=Math.floor(elapsed/60),s=elapsed%60;
-    document.getElementById('elapsed').textContent=`${m}m ${String(s).padStart(2,'0')}s`;
-    const pct=Math.min((elapsed/1800)*100,100);
-    const fill=document.getElementById('tensionFill');
-    fill.style.width=pct+'%';
-    fill.classList.toggle('overdue',elapsed>1800);
+
+  function updateElapsed() {
+    if (!lastBlockTime) return;
+    const elapsed = Math.floor(Date.now() / 1000) - lastBlockTime;
+    const m = Math.floor(elapsed / 60), s = elapsed % 60;
+    document.getElementById('elapsed').textContent = `${m}m ${String(s).padStart(2,'0')}s`;
+    const pct = Math.min((elapsed / 1800) * 100, 100);
+    const fill = document.getElementById('tensionFill');
+    fill.style.width = pct + '%';
+    fill.classList.toggle('overdue', elapsed > 1800);
   }
-  async function fetchAll(){
-    try{
-      const [blockRes,feesRes,mempoolRes,priceRes]=await Promise.all([
+
+  // ── PRICE ONLY — runs every 10 seconds ──────────────────────────────────
+  async function fetchPrice() {
+    try {
+      // CoinGecko free API — price + 24h change, no key needed
+      const res = await fetch(
+        'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true',
+        { cache: 'no-store' }
+      );
+      const data = await res.json();
+      const usd    = data.bitcoin.usd;
+      const chg24  = data.bitcoin.usd_24h_change; // percent, signed
+
+      const priceEl = document.getElementById('btcPrice');
+      const changeEl = document.getElementById('priceChange');
+      const change24El = document.getElementById('priceChange24h');
+
+      // Flash the price if it moved
+      if (lastPrice !== null && usd !== lastPrice) {
+        const dir = usd > lastPrice ? 'up' : 'down';
+        const diff = usd - lastPrice;
+        const pct  = ((diff / lastPrice) * 100).toFixed(3);
+        changeEl.textContent = diff > 0 ? `▲ ${pct}%` : `▼ ${Math.abs(pct)}%`;
+        changeEl.className   = 'price-change ' + dir;
+
+        // Flash animation on the price value
+        priceEl.classList.remove('flash-up', 'flash-down');
+        void priceEl.offsetWidth;
+        priceEl.classList.add(dir === 'up' ? 'flash-up' : 'flash-down');
+      } else if (lastPrice === null) {
+        // First load — no session change to show yet
+        changeEl.textContent = '';
+      }
+
+      // Always update the displayed price
+      priceEl.textContent = '$' + fmt(usd);
+      lastPrice = usd;
+
+      // 24h change — always visible, from CoinGecko
+      if (chg24 !== undefined) {
+        const sign   = chg24 >= 0 ? '▲' : '▼';
+        const cls    = chg24 >= 0 ? 'up' : 'down';
+        change24El.textContent  = `${sign} ${Math.abs(chg24).toFixed(2)}%`;
+        change24El.className    = 'val ' + cls;
+      }
+
+      // Timestamp
+      const now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      document.getElementById('lastPriceUpdate').textContent = now;
+      document.getElementById('priceUpdated').textContent    = now;
+
+    } catch(e) {
+      console.warn('Price fetch failed:', e);
+      // Fallback: try mempool.space price
+      try {
+        const res2  = await fetch('https://mempool.space/api/v1/prices');
+        const data2 = await res2.json();
+        const usd   = data2.USD;
+        document.getElementById('btcPrice').textContent = '$' + fmt(usd);
+        lastPrice = usd;
+      } catch(e2) { /* silent */ }
+    }
+  }
+
+  // ── CHAIN DATA — runs every 30 seconds ──────────────────────────────────
+  async function fetchChain() {
+    try {
+      const [blockRes, feesRes, mempoolRes] = await Promise.all([
         fetch('https://mempool.space/api/blocks/tip/height'),
         fetch('https://mempool.space/api/v1/fees/recommended'),
         fetch('https://mempool.space/api/mempool'),
-        fetch('https://mempool.space/api/v1/prices')
       ]);
-      const blockHeight=await blockRes.json();
-      const fees=await feesRes.json();
-      const mempool=await mempoolRes.json();
-      const price=await priceRes.json();
+      const blockHeight = await blockRes.json();
+      const fees        = await feesRes.json();
+      const mempool     = await mempoolRes.json();
 
-      const hashRes=await fetch(`https://mempool.space/api/block-height/${blockHeight}`);
-      const hash=(await hashRes.text()).trim();
-      const blockData=await fetch(`https://mempool.space/api/block/${hash}`);
-      const block=await blockData.json();
-      lastBlockTime=block.timestamp;
+      // Block timestamp
+      const hashRes  = await fetch(`https://mempool.space/api/block-height/${blockHeight}`);
+      const hash     = (await hashRes.text()).trim();
+      const blockRes2= await fetch(`https://mempool.space/api/block/${hash}`);
+      const block    = await blockRes2.json();
+      lastBlockTime  = block.timestamp;
 
-      const isNew=lastBlockHeight!==null&&blockHeight>lastBlockHeight;
-      lastBlockHeight=blockHeight;
-      const hEl=document.getElementById('blockHeight');
-      hEl.textContent=fmt(blockHeight);
-      if(isNew){hEl.classList.remove('new-block');void hEl.offsetWidth;hEl.classList.add('new-block');}
+      const isNew = lastBlockHeight !== null && blockHeight > lastBlockHeight;
+      lastBlockHeight = blockHeight;
+      const hEl = document.getElementById('blockHeight');
+      hEl.textContent = fmt(blockHeight);
+      if (isNew) { hEl.classList.remove('new-block'); void hEl.offsetWidth; hEl.classList.add('new-block'); }
 
-      document.getElementById('feeFast').textContent=fees.fastestFee;
-      document.getElementById('feeMid').textContent=fees.halfHourFee;
-      document.getElementById('feeSlow').textContent=fees.economyFee;
+      document.getElementById('feeFast').textContent = fees.fastestFee;
+      document.getElementById('feeMid').textContent  = fees.halfHourFee;
+      document.getElementById('feeSlow').textContent = fees.economyFee;
 
-      const uc=mempool.count;
-      document.getElementById('mempool').textContent=uc>=1000?(uc/1000).toFixed(1)+'K':uc;
+      const uc = mempool.count;
+      document.getElementById('mempool').textContent = uc >= 1000 ? (uc / 1000).toFixed(1) + 'K' : uc;
 
-      const into=blockHeight%HALVING,remaining=HALVING-into;
-      const epochPct=(into/HALVING*100).toFixed(1);
-      document.getElementById('epochPct').textContent=epochPct+'%';
-      document.getElementById('epochFill').style.width=epochPct+'%';
-      document.getElementById('epochBlocks').textContent=fmt(remaining)+' blks';
+      const into = blockHeight % HALVING, remaining = HALVING - into;
+      const epochPct = (into / HALVING * 100).toFixed(1);
+      document.getElementById('epochPct').textContent    = epochPct + '%';
+      document.getElementById('epochFill').style.width   = epochPct + '%';
+      document.getElementById('epochBlocks').textContent = fmt(remaining) + ' blks';
 
-      const usd=price.USD,prev=priceCache;
-      priceCache=usd;
-      document.getElementById('btcPrice').textContent='$'+fmt(usd);
-      if(prev!==null){
-        const diff=usd-prev,pctC=((diff/prev)*100).toFixed(2);
-        const el=document.getElementById('priceChange');
-        el.textContent=diff>=0?`▲ ${pctC}%`:`▼ ${Math.abs(pctC)}%`;
-        el.className='price-change '+(diff>=0?'up':'down');
-      }
+      document.getElementById('lastUpdate').textContent =
+        new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
 
-      document.getElementById('lastUpdate').textContent=
-        new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
       document.getElementById('liveDot').classList.remove('error');
-      document.getElementById('liveLabel').textContent='LIVE';
+      document.getElementById('liveLabel').textContent = 'LIVE';
       document.getElementById('errBanner').classList.remove('show');
       document.getElementById('loader').classList.add('hidden');
-      updateElapsed();updateClock();startTick();
-    }catch(e){
+
+      updateElapsed();
+      updateClock();
+      startTick();
+
+    } catch(e) {
       console.error(e);
       document.getElementById('liveDot').classList.add('error');
-      document.getElementById('liveLabel').textContent='ERR';
+      document.getElementById('liveLabel').textContent = 'ERR';
       document.getElementById('errBanner').classList.add('show');
       document.getElementById('loader').classList.add('hidden');
     }
   }
-  fetchAll();
-  setInterval(fetchAll,30000);
-  document.body.addEventListener('click',fetchAll);
+
+  // ── INIT ────────────────────────────────────────────────────────────────
+  fetchChain();
+  fetchPrice();
+
+  // Chain: every 30s, price: every 10s — independent timers
+  setInterval(fetchChain, 30000);
+  setInterval(fetchPrice, 10000);
+
+  document.body.addEventListener('click', () => { fetchChain(); fetchPrice(); });
   updateClock();
 </script>
 </body>
