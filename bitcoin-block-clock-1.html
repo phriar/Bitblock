@@ -363,9 +363,28 @@
     }
   }
 
+  // ── WAKE LOCK — keeps screen on while tab is visible ────────────────────
+  let wakeLock = null;
+
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) return; // not supported (Safari)
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      console.log('Wake lock active');
+    } catch(e) {
+      console.warn('Wake lock failed:', e);
+    }
+  }
+
+  // Re-acquire wake lock if tab becomes visible again (e.g. user switches back)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') requestWakeLock();
+  });
+
   // ── INIT ────────────────────────────────────────────────────────────────
   fetchChain();
   fetchPrice();
+  requestWakeLock();
 
   // Chain: every 30s, price: every 10s — independent timers
   setInterval(fetchChain, 30000);
